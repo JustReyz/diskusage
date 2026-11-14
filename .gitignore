@@ -1,0 +1,14 @@
+# Generated output
+report.html
+*.html
+
+# Build artifacts from Visual Studio / MSBuild
+bin/
+obj/
+*.pdb
+*.user
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
