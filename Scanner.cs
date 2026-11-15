@@ -69,6 +69,17 @@ internal sealed class ScanOptions
     public int MaxChildren = 600;
     public long TreeFileThreshold = 1024L * 1024L;
     public long BigFileThreshold = 25L * 1024L * 1024L;
+
+    // Folders the user excluded from the scan, as display paths. Matching is
+    // case-insensitive and whole-subtree: a skipped folder is never descended
+    // into, so nothing under it is counted or even opened.
+    public HashSet<string> Skip;
+
+    public bool IsSkipped(string fullPath)
+    {
+        if (Skip == null || Skip.Count == 0) return false;
+        return Skip.Contains(PathUtil.DisplayPath(fullPath).TrimEnd('\\'));
+    }
 }
 
 internal sealed class ScanProgress
@@ -85,6 +96,7 @@ internal sealed class ScanResultData
     public long TotalSize;
     public long FileCount;
     public long Errors;
+    public long SkippedFolders;
     public double Seconds;
     public int Threads;
     public bool Cancelled;
@@ -129,6 +141,7 @@ internal static class Scanner
         public long Files;
         public long Errors;
         public long Folders;
+        public long Skipped;
         public volatile bool Cancelled;
         public string Current = "";
         public Action<ScanProgress> OnProgress;
@@ -208,7 +221,11 @@ internal static class Scanner
         List<DirectoryInfo> subs = new List<DirectoryInfo>();
         try
         {
-            foreach (DirectoryInfo sd in rootDir.EnumerateDirectories()) subs.Add(sd);
+            foreach (DirectoryInfo sd in rootDir.EnumerateDirectories())
+            {
+                if (o.IsSkipped(sd.FullName)) { Interlocked.Increment(ref s.Skipped); continue; }
+                subs.Add(sd);
+            }
         }
         catch { Interlocked.Increment(ref s.Errors); }
 
@@ -262,6 +279,7 @@ internal static class Scanner
         data.TotalSize = root.Size;
         data.FileCount = Interlocked.Read(ref s.Files);
         data.Errors = Interlocked.Read(ref s.Errors);
+        data.SkippedFolders = Interlocked.Read(ref s.Skipped);
         data.Seconds = s.Clock.Elapsed.TotalSeconds;
 
         List<KeyValuePair<string, ExtAgg>> exts = new List<KeyValuePair<string, ExtAgg>>(s.Ext);
@@ -325,6 +343,14 @@ internal static class Scanner
                 {
                     if ((sd.Attributes & FileAttributes.ReparsePoint) != 0) continue;
 
+                    // Excluded by the user: do not open it at all. Counting it as
+                    // skipped rather than as a folder keeps the folder total honest.
+                    if (s.Options.IsSkipped(sd.FullName))
+                    {
+                        Interlocked.Increment(ref s.Skipped);
+                        continue;
+                    }
+
                     Interlocked.Increment(ref s.Folders);
 
                     if (!folded && depth < s.Options.TreeDepth && owner.Children.Count < s.Options.MaxChildren)
@@ -376,8 +402,15 @@ internal static class Scanner
         {
             Node c = node.Children[i];
             FinalizeTree(c);
-            size += c.Size;
-            items += c.Items;
+
+            // File nodes are only in the tree for display: their bytes were
+            // already added to this node's Size and Files while walking, so
+            // rolling them up again would count them twice.
+            if (!c.IsFile)
+            {
+                size += c.Size;
+                items += c.Items;
+            }
 
             if (c.TopSize > topSize) { topSize = c.TopSize; topExt = c.TopExt; }
         }

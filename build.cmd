@@ -15,7 +15,7 @@ echo Building diskusage.exe ^(console^)...
 if errorlevel 1 goto fail
 
 echo Building diskusage-gui.exe ^(window^)...
-"%CSC%" /nologo /optimize+ /target:winexe /platform:anycpu /win32manifest:app.manifest /out:diskusage-gui.exe Scanner.cs GuiTheme.cs DiskUsageGui.cs
+"%CSC%" /nologo /optimize+ /target:winexe /platform:anycpu /win32manifest:app.manifest /out:diskusage-gui.exe Scanner.cs GuiTheme.cs Picker.cs DiskUsageGui.cs
 if errorlevel 1 goto fail
 
 echo Done.

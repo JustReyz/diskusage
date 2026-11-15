@@ -14,32 +14,53 @@ Neither one ever deletes, moves or modifies a file. They only read sizes.
 
 ## The window
 
-`diskusage-gui.exe` scans the root of the drive it sits on when started with no
-arguments, or a folder passed on the command line:
+`diskusage-gui.exe` starts scanning as soon as it knows what to scan. With no
+arguments it picks the first ready local drive and starts on it; a folder on the
+command line is scanned straight away:
 
 ```powershell
 diskusage-gui.exe
 diskusage-gui.exe "G:\Games"
 ```
 
+The path box doubles as the source dropdown. Click the chevron on its right to
+pick a drive, a folder, or the folders to leave out. Picking a source starts the
+scan — there is no separate step.
+
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│ DiskUsage  [G:]  G:\Games                              [ Scan ]       │
+│ DiskUsage  [G:]  G:\Games  ▾  98,642 files · 0.8s · 8 threads  [Scan] │
 ├───────────────────────────────────────────────────────────────────────┤
-│ SELECTION   G:\Games │ 315.71 GB │ 211.91 GB 67.1% │ 103.80 GB │ ...  │
+│ SELECTION   G:\Games │ 315.71 GB │ 211.96 GB 67.1% │ 103.75 GB │ ...  │
 ├───────────────────────────────────┬───────────────────────────────────┤
 │ Folders                           │ Extensions                        │
-│  ▼ Games      100.0%  221.39 GB   │  ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬        │
-│    Endfield    60.3%  133.53 GB   │  .chk   29.5%   65.25 GB   1,266  │
-│    Data        18.2%   40.20 GB   │  .mp4    7.3%   16.15 GB     340  │
-│    Discord      3.5%    7.83 GB   │  .zip    2.4%    5.37 GB     173  │
+│  ▼ Games      100.0%  112.11 GB   │  ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬        │
+│    Endfield    59.8%   66.99 GB   │  .chk   58.2%   65.25 GB   1,266  │
+│    Data        18.3%   20.52 GB   │  .mp4   14.4%   16.15 GB     340  │
+│    Discord      3.5%    3.94 GB   │  .zip    4.8%    5.37 GB     173  │
 ├───────────────────────────────────┴───────────────────────────────────┤
 │ Heatmap                                          Games › Endfield     │
-│  ████████████████ ████████ ███ ██ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █  │
+│  ████████████████ ████████ ███ ██ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █ █   │
 ├───────────────────────────────────────────────────────────────────────┤
-│ NAME  Endfield │ FULL PATH  G:\Games\Endfield │ SIZE 133.53 GB │ ...  │
+│ NAME  Endfield │ FULL PATH  G:\Games\Endfield │ SIZE  66.99 GB │ ...  │
 └───────────────────────────────────────────────────────────────────────┘
 ```
+
+### Choosing what to scan
+
+The chevron on the path box opens:
+
+- **Every drive**, listed as `[G:] Local Disk` with used space, free space and
+  percentage full. Picking one scans the whole drive.
+- **`<Select folder…>`** for the shell folder picker.
+- **`<Folders to skip…>`** to leave parts of the current folder out.
+
+`<Folders to skip…>` opens a tree of the current folder with a check box per
+folder. Unchecking a folder excludes it and everything beneath it. A skipped
+folder is never opened, so excluding a big folder also makes the scan faster.
+The toolbar then reports `2 skipped`, and the totals, the folder table and the
+heatmap all exclude those bytes. Exclusions belong to one root: picking a
+different drive clears them rather than carrying stale paths along.
 
 **Folders** — one row per folder, biggest first. Click the chevron to expand,
 click the row to select it. The bar behind the percentage is that folder's share
@@ -128,6 +149,8 @@ waits for a keypress, so the window stays open.
 - Unreadable paths are counted and reported instead of aborting the scan.
 - The window builds a tree to a bounded depth and folds anything deeper into its
   nearest ancestor, so memory stays flat on huge drives while totals stay exact.
+- Folders excluded in `<Folders to skip…>` are never opened, so they cost nothing
+  to skip. Their bytes are absent from every total rather than counted and hidden.
 - Extension colours come from a hash of the extension name, so `.mp4` is always
   the same colour from one scan to the next.
 
@@ -141,6 +164,7 @@ waits for a keypress, so the window stays open.
 | `diskusage.exe.config` | Same, for the console app |
 | `Scanner.cs` | Scan engine used by the windowed app |
 | `GuiTheme.cs` | Palette, fonts, treemap layout |
+| `Picker.cs` | Drive dropdown and the folders-to-skip tree |
 | `DiskUsageGui.cs` | Window, panels and controls |
 | `DiskUsage.cs` | Console app source |
 | `app.manifest` | OS support declarations; enables the dark title bar |
@@ -161,11 +185,13 @@ $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
     /out:diskusage.exe DiskUsage.cs
 
 & $csc /nologo /optimize+ /target:winexe /platform:anycpu /win32manifest:app.manifest `
-    /out:diskusage-gui.exe Scanner.cs GuiTheme.cs DiskUsageGui.cs
+    /out:diskusage-gui.exe Scanner.cs GuiTheme.cs Picker.cs DiskUsageGui.cs
 ```
 
 `DiskUsageGui.cs` uses `--shot <png> [folder]` to render the window to an image
-without interaction, which is how the layout gets checked from a terminal.
+without interaction, which is how the layout gets checked from a terminal. It
+takes `--demo`, `--menu`, `--scope` and `--skip "<path>;<path>"` to capture the
+interactive states the same way.
 
 ## Performance
 
@@ -186,6 +212,7 @@ Measured on a 315 GB drive with 738,230 files:
   hover tooltip use Cascadia Mono, falling back to Consolas, because a
   proportional face makes long paths hard to scan.
 - The console app still carries its own copy of the scan loop from before the
-  window existed. Both produce the same numbers; unifying them is outstanding.
+  window existed. Both produce the same numbers — `G:\Games` reads 112.11 GB and
+  98,642 files from either one — but unifying them is still outstanding.
 - Without `-Export` / `-ExportJson` the console writes nothing to disk. The
   window writes nothing to disk at all.

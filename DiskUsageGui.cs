@@ -24,6 +24,22 @@ internal static class Win32
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    // Dark title bar. Needs the OS manifest, otherwise Windows shims the process
+    // as a Windows 7 app and the compositor ignores the request.
+    public static void DarkFrame(IntPtr hwnd)
+    {
+        try
+        {
+            int on = 1;
+            int hr = DwmSetWindowAttribute(hwnd, 20, ref on, 4);
+            if (hr == 0) return;
+            int hr2 = DwmSetWindowAttribute(hwnd, 19, ref on, 4);
+            if (hr2 != 0)
+                Ui.Report(new Exception("dark frame: 20=0x" + hr.ToString("X8") + " 19=0x" + hr2.ToString("X8")));
+        }
+        catch { }
+    }
 }
 
 // Lets the mouse wheel scroll whatever list is under the cursor, not just the
@@ -141,14 +157,20 @@ internal sealed class Toolbar : DarkControl
 {
     private readonly TextBox _path;
     private Rectangle _pathRect;
+    private Rectangle _chevRect;
     private Rectangle _scanRect;
     private Rectangle _chipRect;
     private bool _scanHover, _scanDown;
+    private bool _chevHover;
     private bool _scanning;
     private string _status = "";
     private string _drive = "";
+    private PopupMenu _menu;
 
     public event EventHandler ScanClicked;
+    public event Action<string> PathChosen;      // a drive was picked: scan it now
+    public event EventHandler FolderPickRequested;
+    public event EventHandler SkipRequested;
 
     public Toolbar()
     {
@@ -187,6 +209,11 @@ internal sealed class Toolbar : DarkControl
         _path.SelectAll();
     }
 
+    public void OpenMenuNow()
+    {
+        OpenMenu();
+    }
+
     private void Fire()
     {
         if (ScanClicked != null) ScanClicked(this, EventArgs.Empty);
@@ -209,14 +236,18 @@ internal sealed class Toolbar : DarkControl
         int scanX = Width - pad - btnW;
         _scanRect = new Rectangle(scanX, (Height - Ui.Px(28)) / 2, btnW, Ui.Px(28));
 
-        int pathRight = scanX - gap - Ui.Px(210);   // leave room for status text
+        // Reserve enough room for the longest status: files, seconds, threads
+        // and the skipped count all at once.
+        int pathRight = scanX - gap - Ui.Px(268);
         int pathW = Math.Max(Ui.Px(160), pathRight - x);
 
         _pathRect = new Rectangle(x, (Height - Ui.Px(26)) / 2, pathW, Ui.Px(26));
+        _chevRect = new Rectangle(_pathRect.Right - Ui.Px(25), _pathRect.Y + 1, Ui.Px(24), _pathRect.Height - 2);
+
         // Poppins has a taller line box than Segoe UI, so the native text box
         // needs more than the old 12px of inner height or it clips the baseline.
         _path.SetBounds(_pathRect.X + Ui.Px(9), _pathRect.Y + Ui.Px(4),
-                        _pathRect.Width - Ui.Px(18), _pathRect.Height - Ui.Px(8));
+                        _pathRect.Width - Ui.Px(18) - Ui.Px(24), _pathRect.Height - Ui.Px(8));
     }
 
     protected override void PaintSelf(Graphics g)
@@ -248,6 +279,14 @@ internal sealed class Toolbar : DarkControl
         using (GraphicsPath p = Ui.RoundPath(_pathRect, Ui.Px(5)))
             g.DrawPath(Ui.PenFor(Ui.C("#34343f"), 1), p);
 
+        // dropdown affordance: divider plus a chevron, drawn rather than typed
+        // so it does not depend on the typeface having the glyph
+        if (_chevHover)
+            g.FillRectangle(Ui.BrushFor(Ui.C("#1c1c24")), _chevRect);
+        g.DrawLine(Ui.PenFor(Ui.C("#2b2b35"), 1),
+            _chevRect.X, _chevRect.Y + Ui.Px(5), _chevRect.X, _chevRect.Bottom - Ui.Px(5));
+        DrawChevron(g, _chevRect, _chevHover ? Ui.TextCol : Ui.Dim);
+
         // scan button
         bool hot = _scanHover && !_scanning;
         Color top = _scanning ? Ui.C("#3a3a46") : (hot ? Ui.C("#5b98ff") : Ui.C("#4c8dff"));
@@ -273,31 +312,142 @@ internal sealed class Toolbar : DarkControl
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+
         bool h = _scanRect.Contains(e.Location);
-        if (h != _scanHover) { _scanHover = h; Cursor = h ? Cursors.Hand : Cursors.Default; Invalidate(); }
+        if (h != _scanHover) { _scanHover = h; Invalidate(); }
+
+        bool c = _chevRect.Contains(e.Location);
+        if (c != _chevHover) { _chevHover = c; Invalidate(); }
+
+        Cursor = (h || c) ? Cursors.Hand : Cursors.Default;
     }
 
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if (_scanHover) { _scanHover = false; Cursor = Cursors.Default; Invalidate(); }
+        if (_scanHover || _chevHover)
+        {
+            _scanHover = false;
+            _chevHover = false;
+            Cursor = Cursors.Default;
+            Invalidate();
+        }
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+
+        // The menu opens on mouse-up: opening on mouse-down leaves the popup
+        // active while the matching mouse-up is still heading for this window,
+        // which deactivates it and closes it again.
+        if (_chevRect.Contains(e.Location)) return;
         if (_scanRect.Contains(e.Location)) { _scanDown = true; Invalidate(); }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+
+        if (_chevRect.Contains(e.Location)) { OpenMenu(); return; }
+
         if (_scanDown)
         {
             _scanDown = false;
             Invalidate();
             if (_scanRect.Contains(e.Location)) Fire();
         }
+    }
+
+    private static void DrawChevron(Graphics g, Rectangle r, Color c)
+    {
+        int w = Ui.Px(9);
+        int h = Ui.Px(5);
+        int cx = r.X + r.Width / 2;
+        int cy = r.Y + r.Height / 2 - h / 2;
+
+        g.DrawLines(Ui.PenFor(c, 1.6f), new Point[] {
+            new Point(cx - w / 2, cy),
+            new Point(cx, cy + h),
+            new Point(cx + w / 2, cy)
+        });
+    }
+
+    // Drives first, matching the source list people expect, then the two
+    // folder actions. Picking a drive scans it straight away.
+    private void OpenMenu()
+    {
+        if (_menu != null) return;
+
+        PopupMenu pop = new PopupMenu();
+        MenuList list = pop.List;
+
+        MenuEntry head = new MenuEntry();
+        head.Header = true;
+        head.Text = "SCAN";
+        list.Entries.Add(head);
+
+        List<DriveEntry> drives = Drives.List();
+        for (int i = 0; i < drives.Count; i++)
+        {
+            DriveEntry d = drives[i];
+
+            MenuEntry e = new MenuEntry();
+            e.Text = "[" + d.Letter + "] " + d.Label;
+            e.Value = d.Root;
+            e.Enabled = d.Ready;
+
+            if (d.Ready && d.Total > 0)
+            {
+                long used = d.Total - d.Free;
+                e.Sub = Ui.Fmt(used) + " used  \u00B7  " + Ui.Fmt(d.Free) + " free  \u00B7  " +
+                        Ui.Pct(used * 100.0 / d.Total);
+            }
+            else e.Sub = "Not ready";
+
+            list.Entries.Add(e);
+        }
+
+        MenuEntry other = new MenuEntry();
+        other.Header = true;
+        other.Text = "OTHER";
+        list.Entries.Add(other);
+
+        MenuEntry pick = new MenuEntry();
+        pick.Text = "<Select folder\u2026>";
+        pick.Action = 1;
+        list.Entries.Add(pick);
+
+        MenuEntry skip = new MenuEntry();
+        skip.Text = "<Folders to skip\u2026>";
+        skip.Sub = "Leave parts of the folder out of the scan";
+        skip.Action = 2;
+        skip.Enabled = _path.Text.Trim().Length > 0;
+        list.Entries.Add(skip);
+
+        list.Picked += delegate(MenuEntry picked)
+        {
+            pop.Close();
+
+            if (picked.Action == 1)
+            {
+                if (FolderPickRequested != null) FolderPickRequested(this, EventArgs.Empty);
+            }
+            else if (picked.Action == 2)
+            {
+                if (SkipRequested != null) SkipRequested(this, EventArgs.Empty);
+            }
+            else if (!string.IsNullOrEmpty(picked.Value))
+            {
+                _path.Text = picked.Value;
+                if (PathChosen != null) PathChosen(picked.Value);
+            }
+        };
+
+        pop.FormClosed += delegate { _menu = null; };
+        _menu = pop;
+
+        pop.ShowUnder(RectangleToScreen(_pathRect), FindForm());
     }
 }
 
@@ -1578,6 +1728,11 @@ internal sealed class MainForm : Form
     private DetailsBar _details;
 
     private ScanResultData _data;
+
+    // Folders the user excluded from the current root, and the root they were
+    // chosen for. Cleared when the root changes.
+    private HashSet<string> _skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private string _lastRoot;
     private bool _scanning;
     private volatile bool _cancel;
     private bool _syncMode;
@@ -1618,6 +1773,14 @@ internal sealed class MainForm : Form
         Controls.Add(_bar);
 
         _bar.ScanClicked += delegate { OnScanButton(); };
+        _bar.PathChosen += delegate(string p)
+        {
+            _bar.PathText = p;
+            StartScan(p);
+        };
+        _bar.FolderPickRequested += delegate { ChooseFolder(); };
+        _bar.SkipRequested += delegate { ChooseSkip(); };
+
         _body.Tree.SelectionChanged += delegate
         {
             _details.SetNode(_body.Tree.SelectedNode);
@@ -1638,6 +1801,17 @@ internal sealed class MainForm : Form
     }
 
     public void SetSyncMode() { _syncMode = true; }
+
+    // Used by the capture modes to exercise the skip path without a mouse.
+    public void SetSkip(HashSet<string> skip)
+    {
+        _skip = new HashSet<string>(skip, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public void OpenSourceMenu()
+    {
+        _bar.OpenMenuNow();
+    }
 
     // Exercises the interactive paths (tree selection, drill-down, extension
     // isolation) so a capture can prove they do not throw.
@@ -1677,15 +1851,7 @@ internal sealed class MainForm : Form
     // Asks the compositor for a dark title bar so the frame matches the app.
     private void ApplyDarkFrame()
     {
-        try
-        {
-            int on = 1;
-            int hr = Win32.DwmSetWindowAttribute(Handle, 20, ref on, 4);
-            if (hr == 0) return;
-            int hr2 = Win32.DwmSetWindowAttribute(Handle, 19, ref on, 4);
-            if (hr2 != 0) Ui.Report(new Exception("dark frame: 20=0x" + hr.ToString("X8") + " 19=0x" + hr2.ToString("X8")));
-        }
-        catch { }
+        Win32.DarkFrame(Handle);
     }
 
     private void OnScanButton()
@@ -1711,6 +1877,18 @@ internal sealed class MainForm : Form
 
     public void StartScan(string path)
     {
+        // Exclusions belong to one root. Moving to a different root drops them
+        // rather than silently carrying stale paths along.
+        string root = path.TrimEnd('\\');
+        if (_lastRoot != null && !string.Equals(_lastRoot, root, StringComparison.OrdinalIgnoreCase))
+            _skip.Clear();
+        _lastRoot = root;
+
+        StartScanCore(path);
+    }
+
+    private void StartScanCore(string path)
+    {
         if (_scanning) return;
 
         _scanning = true;
@@ -1734,6 +1912,7 @@ internal sealed class MainForm : Form
             ScanOptions o = new ScanOptions();
             o.Path = path;
             o.Threads = Math.Min(Environment.ProcessorCount, 8);
+            o.Skip = new HashSet<string>(_skip, StringComparer.OrdinalIgnoreCase);
 
             ScanResultData d = Scanner.Run(o,
                 delegate(ScanProgress p) { Post(delegate { OnProgress(p); }); },
@@ -1751,6 +1930,46 @@ internal sealed class MainForm : Form
                 _bar.SetStatus("Scan failed: " + ex.Message);
             });
         }
+    }
+
+    // Pick a folder with the shell dialog, then scan it.
+    private void ChooseFolder()
+    {
+        using (FolderBrowserDialog dlg = new FolderBrowserDialog())
+        {
+            dlg.Description = "Folder to scan";
+            dlg.ShowNewFolderButton = false;
+
+            string cur = _bar.PathText.Trim().Trim('"');
+            if (Directory.Exists(cur)) dlg.SelectedPath = cur;
+
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            _bar.PathText = dlg.SelectedPath;
+            StartScan(dlg.SelectedPath);
+        }
+    }
+
+    // Choose which subfolders of the current root are left out, then rescan.
+    private void ChooseSkip()
+    {
+        string path = _bar.PathText.Trim().Trim('"');
+        if (path.Length == 0) { _bar.SetStatus("Pick a folder first"); return; }
+
+        try { path = System.IO.Path.GetFullPath(path); }
+        catch { _bar.SetStatus("Bad path"); return; }
+
+        if (!Directory.Exists(path)) { _bar.SetStatus("Not a folder: " + path); return; }
+
+        using (ScopeForm f = new ScopeForm(path, _skip))
+        {
+            if (f.ShowDialog(this) != DialogResult.OK) return;
+            _skip = f.Skip;
+        }
+
+        _lastRoot = path.TrimEnd('\\');
+        _bar.PathText = path;
+        StartScanCore(path);
     }
 
     private void Post(Action a)
@@ -1779,8 +1998,12 @@ internal sealed class MainForm : Form
 
         _data = d;
         _bar.SetDrive(DriveOf(d.Path));
-        _bar.SetStatus(Ui.Num(d.FileCount) + " files \u00B7 " + d.Seconds.ToString("0.0", CultureInfo.InvariantCulture) +
-                       "s \u00B7 " + d.Threads + " threads");
+
+        string status = Ui.Num(d.FileCount) + " files \u00B7 " +
+                        d.Seconds.ToString("0.0", CultureInfo.InvariantCulture) + "s \u00B7 " +
+                        d.Threads + " threads";
+        if (d.SkippedFolders > 0) status += " \u00B7 " + Ui.Num(d.SkippedFolders) + " skipped";
+        _bar.SetStatus(status);
 
         _stats.SetData(d);
         _body.Ext.SetData(d.Extensions, d.TotalSize);
@@ -1831,12 +2054,23 @@ internal static class GuiProgram
         string shot = null;
         string path = null;
         bool demo = false;
+        bool scope = false;
+        bool menu = false;
+        List<string> skipPaths = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
         {
             string a = args[i];
             if (a == "--shot" && i + 1 < args.Length) shot = args[++i];
             else if (a == "--demo") demo = true;
+            else if (a == "--scope") scope = true;
+            else if (a == "--menu") menu = true;
+            else if (a == "--skip" && i + 1 < args.Length)
+            {
+                string[] parts = args[++i].Split(';');
+                for (int k = 0; k < parts.Length; k++)
+                    if (parts[k].Trim().Length > 0) skipPaths.Add(parts[k].Trim());
+            }
             else if (a == "--help" || a == "/?")
             {
                 MessageBox.Show(
@@ -1854,20 +2088,21 @@ internal static class GuiProgram
 
         if (path == null)
         {
-            // Double-clicked from Explorer: start on the drive the exe lives on.
-            try
-            {
-                string root = System.IO.Path.GetPathRoot(AppDomain.CurrentDomain.BaseDirectory);
-                if (!string.IsNullOrEmpty(root)) path = root;
-            }
-            catch { }
+            // Double-clicked from Explorer: start on the first local drive and
+            // scan it straight away, the way the drive dropdown does.
+            path = Drives.DefaultRoot();
         }
 
-        if (shot != null) return CaptureMode(path, shot, demo);
+        if (shot != null) return CaptureMode(path, shot, demo, scope, menu, skipPaths);
 
         using (MainForm f = new MainForm(path))
         {
-            if (path != null) f.BeginInvoke((Action)delegate { f.StartScan(path); });
+            if (path != null)
+            {
+                MainForm form = f;
+                string root = path;
+                f.BeginInvoke((Action)delegate { form.StartScan(root); });
+            }
             Application.Run(f);
         }
         return 0;
@@ -1875,10 +2110,31 @@ internal static class GuiProgram
 
     // Renders the window to a PNG without a visible message loop. Used to check
     // the layout from a terminal, and handy for docs screenshots.
-    private static int CaptureMode(string path, string file, bool demo)
+    private static int CaptureMode(string path, string file, bool demo, bool scope, bool menu,
+                                   List<string> skipPaths)
     {
+        HashSet<string> skip = new HashSet<string>(skipPaths, StringComparer.OrdinalIgnoreCase);
+
+        if (scope)
+        {
+            using (ScopeForm sf = new ScopeForm(path, skip))
+            {
+                sf.StartPosition = FormStartPosition.Manual;
+                sf.Location = new Point(Ui.Px(40), Ui.Px(40));
+                sf.TopMost = true;
+                sf.Show();
+                Application.DoEvents();
+                Thread.Sleep(400);
+                Application.DoEvents();
+                Grab(sf.Bounds, file);
+                sf.Close();
+            }
+            return 0;
+        }
+
         MainForm f = new MainForm(path);
         f.SetSyncMode();
+        if (skip.Count > 0) f.SetSkip(skip);
 
         Rectangle wa = Screen.PrimaryScreen.WorkingArea;
         int w = Math.Min(Ui.Px(1500), wa.Width - Ui.Px(40));
@@ -1896,14 +2152,30 @@ internal static class GuiProgram
 
         if (demo) { f.DemoInteract(); Application.DoEvents(); }
 
+        if (menu)
+        {
+            f.OpenSourceMenu();
+            Application.DoEvents();
+        }
+
         Thread.Sleep(700);
         Application.DoEvents();
         f.Refresh();
         Application.DoEvents();
 
+        // The dropdown is a separate top-level window, so capture the whole
+        // working area when it is open or it gets cut off.
+        Rectangle grab = menu ? wa : f.Bounds;
+        Grab(grab, file);
+
+        f.Close();
+        return 0;
+    }
+
+    private static void Grab(Rectangle b, string file)
+    {
         try
         {
-            Rectangle b = f.Bounds;
             using (Bitmap bmp = new Bitmap(b.Width, b.Height))
             {
                 using (Graphics g = Graphics.FromImage(bmp))
@@ -1914,11 +2186,6 @@ internal static class GuiProgram
         catch (Exception ex)
         {
             Console.Error.WriteLine("capture failed: " + ex.Message);
-            f.Close();
-            return 1;
         }
-
-        f.Close();
-        return 0;
     }
 }
