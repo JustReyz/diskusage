@@ -41,8 +41,13 @@ internal static class Ui
     private static readonly Dictionary<int, SolidBrush> _brushCache = new Dictionary<int, SolidBrush>();
     private static readonly Dictionary<long, Pen> _penCache = new Dictionary<long, Pen>();
     private static readonly Dictionary<string, Font> _fontCache = new Dictionary<string, Font>();
+    // Body and emphasis are separate families rather than one family with
+    // FontStyle.Bold, because Poppins ships real Medium/SemiBold weights and
+    // GDI+ synthesises a fake bold when asked for a weight it does not have.
     private static string _uiFamily = "Segoe UI";
+    private static string _uiStrong = "Segoe UI";
     private static string _monoFamily = "Consolas";
+    private static bool _realWeights;
 
     public static int Px(int v) { return (int)Math.Round(v * S); }
     public static float Pxf(float v) { return v * S; }
@@ -91,6 +96,7 @@ internal static class Ui
 
     public static Font UiFont(float px, bool bold)
     {
+        if (_realWeights) return MakeFont(bold ? _uiStrong : _uiFamily, px, FontStyle.Regular);
         return MakeFont(_uiFamily, px, bold ? FontStyle.Bold : FontStyle.Regular);
     }
 
@@ -116,18 +122,60 @@ internal static class Ui
 
     public static void InitFonts()
     {
-        bool hasSegoe = false, hasMono = false;
+        bool poppins = false, poppinsMedium = false, poppinsSemi = false;
+        bool segoe = false, segoeVar = false, consolas = false, cascadia = false;
+
         FontFamily[] fams = FontFamily.Families;
         for (int i = 0; i < fams.Length; i++)
         {
             string n = fams[i].Name;
-            if (n == "Segoe UI Variable Text") _uiFamily = "Segoe UI Variable Text";
-            if (n == "Segoe UI") hasSegoe = true;
-            if (n == "Consolas") hasMono = true;
+            if (n == "Poppins") poppins = true;
+            if (n == "Poppins Medium") poppinsMedium = true;
+            if (n == "Poppins SemiBold") poppinsSemi = true;
+            if (n == "Segoe UI") segoe = true;
+            if (n == "Segoe UI Variable Text") segoeVar = true;
+            if (n == "Consolas") consolas = true;
+            if (n == "Cascadia Mono") cascadia = true;
             fams[i].Dispose();
         }
-        if (_uiFamily != "Segoe UI Variable Text" && !hasSegoe) _uiFamily = "Tahoma";
-        if (!hasMono) _monoFamily = "Courier New";
+
+        string body = segoeVar ? "Segoe UI Variable Text" : (segoe ? "Segoe UI" : "Tahoma");
+        string strong = body;
+
+        if (poppins)
+        {
+            body = poppinsMedium ? "Poppins Medium" : "Poppins";
+            strong = poppinsSemi ? "Poppins SemiBold" : body;
+            _realWeights = true;
+        }
+
+        _uiFamily = body;
+        _uiStrong = strong;
+
+        _monoFamily = cascadia ? "Cascadia Mono" : (consolas ? "Consolas" : "Courier New");
+    }
+
+    // Mean advance width of a font, measured once and cached. Treemap labels are
+    // clipped by character count, and the count that fits depends on the
+    // typeface: Poppins runs noticeably wider than Segoe UI at the same size.
+    private static readonly Dictionary<string, float> _avgCache = new Dictionary<string, float>();
+
+    public static float AvgCharW(Font f)
+    {
+        string key = f.Name + "|" + f.SizeInPoints.ToString("0.00", CultureInfo.InvariantCulture);
+        float w;
+        if (_avgCache.TryGetValue(key, out w)) return w;
+
+        using (Bitmap bmp = new Bitmap(1, 1))
+        using (Graphics g = Graphics.FromImage(bmp))
+        {
+            Size s = TextRenderer.MeasureText(g, "abcdefghijklmnopqrstuvwxyz0123456789",
+                f, Size.Empty, TextFormatFlags.NoPadding);
+            w = Math.Max(1f, (float)s.Width / 36f);
+        }
+
+        _avgCache[key] = w;
+        return w;
     }
 
     public static void DrawText(Graphics g, string s, Font f, Color c, Rectangle r, TextFormatFlags flags)

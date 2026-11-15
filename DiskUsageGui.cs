@@ -213,8 +213,10 @@ internal sealed class Toolbar : DarkControl
         int pathW = Math.Max(Ui.Px(160), pathRight - x);
 
         _pathRect = new Rectangle(x, (Height - Ui.Px(26)) / 2, pathW, Ui.Px(26));
-        _path.SetBounds(_pathRect.X + Ui.Px(9), _pathRect.Y + Ui.Px(6),
-                        _pathRect.Width - Ui.Px(18), _pathRect.Height - Ui.Px(12));
+        // Poppins has a taller line box than Segoe UI, so the native text box
+        // needs more than the old 12px of inner height or it clips the baseline.
+        _path.SetBounds(_pathRect.X + Ui.Px(9), _pathRect.Y + Ui.Px(4),
+                        _pathRect.Width - Ui.Px(18), _pathRect.Height - Ui.Px(8));
     }
 
     protected override void PaintSelf(Graphics g)
@@ -354,7 +356,7 @@ internal sealed class StatsStrip : DarkControl
 
         // selection block
         Rectangle sel = new Rectangle(0, 0, selW, Height);
-        Ui.DrawText(g, "SELECTION", Ui.F(10f), Ui.Dimmer,
+        Ui.DrawText(g, "SELECTION", Ui.FB(10f), Ui.Dimmer,
             new Rectangle(pad, Ui.Px(8), selW - pad * 2, Ui.Px(14)), Ui.LeftFlags);
         Ui.DrawText(g, _selection.Length == 0 ? "\u2014" : _selection, Ui.F(13f), Ui.C("#cfcfda"),
             new Rectangle(pad, Ui.Px(24), selW - pad * 2, Ui.Px(20)), Ui.LeftFlags);
@@ -401,7 +403,7 @@ internal sealed class StatsStrip : DarkControl
     {
         int pad = Ui.Px(14);
         Rectangle r = new Rectangle(x + pad, Ui.Px(8), w - pad * 2, Ui.Px(14));
-        Ui.DrawText(g, key, Ui.F(10f), Ui.Dimmer, r, Ui.LeftFlags);
+        Ui.DrawText(g, key, Ui.FB(10f), Ui.Dimmer, r, Ui.LeftFlags);
 
         Rectangle vr = new Rectangle(x + pad, Ui.Px(23), w - pad * 2, Ui.Px(20));
         Ui.DrawText(g, value, Ui.F(13.5f), vc, vr, Ui.LeftFlags);
@@ -545,7 +547,7 @@ internal sealed class TreeTable : DarkControl, IWheelTarget
         g.FillRectangle(Ui.BrushFor(Ui.Thead), 0, 0, Width, HeadH);
         g.DrawLine(Ui.PenFor(Ui.Line, 1), 0, HeadH - 1, Width, HeadH - 1);
 
-        Font hf = Ui.F(10f);
+        Font hf = Ui.FB(10f);
         Ui.DrawText(g, "FOLDER", hf, Ui.Dimmer, new Rectangle(Ui.Px(12), 0, nameW, HeadH), Ui.LeftFlags);
         Ui.DrawText(g, "% OF PARENT", hf, Ui.Dimmer, new Rectangle(pctX, 0, Ui.Px(84), HeadH), Ui.RightFlags);
         Ui.DrawText(g, "SIZE", hf, Ui.Dimmer, new Rectangle(sizeX, 0, Ui.Px(80), HeadH), Ui.RightFlags);
@@ -846,7 +848,7 @@ internal sealed class ExtTable : DarkControl, IWheelTarget
         int sizeX = right - Ui.Px(80) - Ui.Px(64);
         int filesX = right - Ui.Px(64);
 
-        Font hf = Ui.F(10f);
+        Font hf = Ui.FB(10f);
         Ui.DrawText(g, "EXTENSION", hf, Ui.Dimmer,
             new Rectangle(nameX, StripTop + StripH, shareX - nameX, HeadH - StripTop - StripH), Ui.LeftFlags);
         Ui.DrawText(g, "SHARE", hf, Ui.Dimmer,
@@ -871,7 +873,7 @@ internal sealed class ExtTable : DarkControl, IWheelTarget
         int last = Math.Min(_exts.Count - 1, (_scroll + PageH) / RowH);
         long maxSize = Math.Max(1, _exts[0].Size);
 
-        Font ef = Ui.MF(11.5f);
+        Font ef = Ui.F(11.5f);
         Font sf = Ui.F(11.5f);
 
         for (int i = first; i <= last; i++)
@@ -891,10 +893,12 @@ internal sealed class ExtTable : DarkControl, IWheelTarget
             Ui.DrawText(g, x2.Ext, ef, Ui.C("#cfcfda"),
                 new Rectangle(nameX, y, Math.Max(0, shareX - nameX - Ui.Px(8)), RowH), Ui.LeftFlags);
 
-            // share column doubles as a heat bar, scaled against the biggest extension
+            // Share column doubles as a heat bar, scaled against the biggest
+            // extension. Anything too small to read as a bar is skipped rather
+            // than drawn as a one-pixel sliver that looks like a rendering bug.
             double share = (double)x2.Size / _total * 100.0;
             int barW = (int)(Ui.Px(54) * ((double)x2.Size / maxSize));
-            if (barW > 0)
+            if (barW >= Ui.Px(9))
                 Ui.Rounded(g, new RectangleF(shareX + Ui.Px(54) - barW, y + Ui.Px(4), barW, RowH - Ui.Px(8)),
                     Ui.Px(2), x2.Ext == _isolated ? Ui.C("#3d5f9e") : Ui.C("#3a3a47"));
 
@@ -1143,6 +1147,13 @@ internal sealed class TreemapView : DarkControl, IWheelTarget
         g.SetClip(a);
         g.SmoothingMode = SmoothingMode.None;
 
+        // Hoisted so the label font and its measured advance are resolved once
+        // per paint rather than once per block.
+        Font blockFont = Ui.F(10.5f);
+        Font sizeFont = Ui.F(9.5f);
+        float blockCharW = Ui.AvgCharW(blockFont);
+        float chipCharW = Ui.AvgCharW(sizeFont);
+
         for (int i = 0; i < _blocks.Count; i++)
         {
             Block b = _blocks[i];
@@ -1165,19 +1176,19 @@ internal sealed class TreemapView : DarkControl, IWheelTarget
 
             if (b.Rect.Width > Ui.Px(62) && b.Rect.Height > Ui.Px(20))
             {
-                int maxChars = (int)((b.Rect.Width - Ui.Px(8)) / Ui.Pxf(6.2f));
+                int maxChars = (int)((b.Rect.Width - Ui.Px(8)) / blockCharW);
                 if (maxChars > 2)
                 {
                     Rectangle tr = new Rectangle((int)b.Rect.X + Ui.Px(4), (int)b.Rect.Y + Ui.Px(1),
                                                  (int)b.Rect.Width - Ui.Px(8), Ui.Px(16));
                     if (!dim)
-                        Ui.DrawText(g, Clip(b.Node.Name, maxChars), Ui.F(10.5f), Ui.C("#1a1a1a"),
+                        Ui.DrawText(g, Clip(b.Node.Name, maxChars), blockFont, Ui.C("#1a1a1a"),
                             new Rectangle(tr.X + 1, tr.Y + 1, tr.Width, tr.Height), Ui.LeftFlags);
-                    Ui.DrawText(g, Clip(b.Node.Name, maxChars), Ui.F(10.5f), dim ? Ui.C("#4e4e5a") : Color.White,
+                    Ui.DrawText(g, Clip(b.Node.Name, maxChars), blockFont, dim ? Ui.C("#4e4e5a") : Color.White,
                         tr, Ui.LeftFlags);
 
                     if (b.Rect.Height > Ui.Px(32))
-                        Ui.DrawText(g, Ui.Fmt(b.Node.Size), Ui.F(9.5f), dim ? Ui.C("#43434e") : Ui.C("#d8d8e2"),
+                        Ui.DrawText(g, Ui.Fmt(b.Node.Size), sizeFont, dim ? Ui.C("#43434e") : Ui.C("#d8d8e2"),
                             new Rectangle(tr.X, (int)b.Rect.Y + Ui.Px(15), tr.Width, Ui.Px(15)), Ui.LeftFlags);
                 }
             }
@@ -1189,13 +1200,14 @@ internal sealed class TreemapView : DarkControl, IWheelTarget
             Outline o = _outlines[i];
                 g.DrawRectangle(Ui.PenFor(Color.FromArgb(140, 0, 0, 0), 1.4f), o.Rect.X, o.Rect.Y, o.Rect.Width, o.Rect.Height);
 
-            float chipW = Math.Min(o.Rect.Width - Ui.Px(4), Math.Max(Ui.Px(34), o.Label.Length * Ui.Pxf(6.2f) + Ui.Px(8)));
+            float chipW = Math.Min(o.Rect.Width - Ui.Px(4),
+                Math.Max(Ui.Px(34), o.Label.Length * chipCharW + Ui.Px(8)));
             RectangleF chip = new RectangleF(o.Rect.X + 1.5f, o.Rect.Y + 1.5f, chipW, Ui.Px(15));
             Ui.Rounded(g, chip, Ui.Px(3), Ui.C("#0d0d12"));
 
-            int maxChars = (int)((chipW - Ui.Px(8)) / Ui.Pxf(5.8f));
+            int maxChars = (int)((chipW - Ui.Px(8)) / chipCharW);
             if (maxChars > 2)
-                Ui.DrawText(g, Clip(o.Label, maxChars), Ui.F(9.5f), Ui.C("#d8d8e2"),
+                Ui.DrawText(g, Clip(o.Label, maxChars), sizeFont, Ui.C("#d8d8e2"),
                     new Rectangle((int)chip.X + Ui.Px(4), (int)chip.Y, (int)chip.Width - Ui.Px(6), (int)chip.Height),
                     Ui.LeftFlags);
         }
@@ -1637,7 +1649,11 @@ internal sealed class MainForm : Form
         _body.Tree.SelectNode(folder, true);
         if (folder.Children.Count > 0) _body.Tree.SelectNode(folder.Children[0], true);
 
-        if (_data.Extensions.Count > 1) _body.Ext.Isolate(_data.Extensions[1].Ext);
+        // Isolate the extension that actually dominates the drilled folder, so
+        // the capture shows a meaningful highlight instead of an all-dim map.
+        string ext = folder.TopExt;
+        if (string.IsNullOrEmpty(ext) && _data.Extensions.Count > 0) ext = _data.Extensions[0].Ext;
+        if (!string.IsNullOrEmpty(ext)) _body.Ext.Isolate(ext);
 
         _body.Map.DrillTo(folder);
         _details.SetNode(folder);
@@ -1647,13 +1663,27 @@ internal sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        ApplyDarkFrame();
+    }
 
-        // Ask the compositor for a dark title bar so the frame matches the app.
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        // Windows recalculates the frame when the window is first shown, which
+        // drops the attribute on some builds. Re-assert it here.
+        ApplyDarkFrame();
+    }
+
+    // Asks the compositor for a dark title bar so the frame matches the app.
+    private void ApplyDarkFrame()
+    {
         try
         {
             int on = 1;
-            if (Win32.DwmSetWindowAttribute(Handle, 20, ref on, 4) != 0)
-                Win32.DwmSetWindowAttribute(Handle, 19, ref on, 4);
+            int hr = Win32.DwmSetWindowAttribute(Handle, 20, ref on, 4);
+            if (hr == 0) return;
+            int hr2 = Win32.DwmSetWindowAttribute(Handle, 19, ref on, 4);
+            if (hr2 != 0) Ui.Report(new Exception("dark frame: 20=0x" + hr.ToString("X8") + " 19=0x" + hr2.ToString("X8")));
         }
         catch { }
     }

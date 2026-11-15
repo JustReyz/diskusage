@@ -11,11 +11,11 @@ if not exist "%CSC%" (
 cd /d "%~dp0"
 
 echo Building diskusage.exe ^(console^)...
-"%CSC%" /nologo /optimize+ /target:exe /platform:anycpu /out:diskusage.exe DiskUsage.cs
+"%CSC%" /nologo /optimize+ /target:exe /platform:anycpu /win32manifest:app.manifest /out:diskusage.exe DiskUsage.cs
 if errorlevel 1 goto fail
 
 echo Building diskusage-gui.exe ^(window^)...
-"%CSC%" /nologo /optimize+ /target:winexe /platform:anycpu /out:diskusage-gui.exe Scanner.cs GuiTheme.cs DiskUsageGui.cs
+"%CSC%" /nologo /optimize+ /target:winexe /platform:anycpu /win32manifest:app.manifest /out:diskusage-gui.exe Scanner.cs GuiTheme.cs DiskUsageGui.cs
 if errorlevel 1 goto fail
 
 echo Done.

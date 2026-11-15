@@ -143,6 +143,7 @@ waits for a keypress, so the window stays open.
 | `GuiTheme.cs` | Palette, fonts, treemap layout |
 | `DiskUsageGui.cs` | Window, panels and controls |
 | `DiskUsage.cs` | Console app source |
+| `app.manifest` | OS support declarations; enables the dark title bar |
 | `build.cmd` | Builds both executables |
 
 ## Build
@@ -156,10 +157,11 @@ Or by hand:
 ```powershell
 $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 
-& $csc /nologo /optimize+ /target:exe /platform:anycpu /out:diskusage.exe DiskUsage.cs
+& $csc /nologo /optimize+ /target:exe /platform:anycpu /win32manifest:app.manifest `
+    /out:diskusage.exe DiskUsage.cs
 
-& $csc /nologo /optimize+ /target:winexe /platform:anycpu /out:diskusage-gui.exe `
-    Scanner.cs GuiTheme.cs DiskUsageGui.cs
+& $csc /nologo /optimize+ /target:winexe /platform:anycpu /win32manifest:app.manifest `
+    /out:diskusage-gui.exe Scanner.cs GuiTheme.cs DiskUsageGui.cs
 ```
 
 `DiskUsageGui.cs` uses `--shot <png> [folder]` to render the window to an image
@@ -178,6 +180,11 @@ Measured on a 315 GB drive with 738,230 files:
 
 - The exes are unsigned. Windows SmartScreen may warn the first time they run on
   a different machine. They are safe to allow on your own system.
+- The window uses **Poppins** (Medium for body text, SemiBold for emphasis). If
+  Poppins is not installed it falls back to Segoe UI, then Tahoma, so the layout
+  still holds on a machine without it. The full path in the details bar and the
+  hover tooltip use Cascadia Mono, falling back to Consolas, because a
+  proportional face makes long paths hard to scan.
 - The console app still carries its own copy of the scan loop from before the
   window existed. Both produce the same numbers; unifying them is outstanding.
 - Without `-Export` / `-ExportJson` the console writes nothing to disk. The
