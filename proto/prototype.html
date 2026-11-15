@@ -1,0 +1,893 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DiskUsage — UI prototype</title>
+<style>
+  :root {
+    --bg: #16161a;
+    --panel: #1d1d22;
+    --panel2: #22222a;
+    --line: #2c2c36;
+    --text: #dcdce3;
+    --dim: #8a8a97;
+    --dimmer: #62626e;
+    --accent: #4c8dff;
+    --sel: #2a4a7f;
+    --red: #e0575b;
+    --amber: #f2a33c;
+    --green: #3fb98a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.35 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    display: grid;
+    grid-template-rows: 44px 54px minmax(0, 1fr) 46px;
+    overflow: hidden;
+    user-select: none;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ---------- toolbar ---------- */
+  .bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 12px;
+    background: linear-gradient(#232330, #1c1c24);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    font-weight: 600; letter-spacing: .02em; font-size: 12.5px;
+    color: #e8e8ef;
+  }
+  .brand span { color: var(--accent); }
+  .drive {
+    padding: 3px 9px; border-radius: 5px;
+    background: #2a2a35; border: 1px solid #35353f;
+    font-weight: 600; font-size: 11.5px;
+  }
+  .path {
+    flex: 1; min-width: 120px; max-width: 520px;
+    padding: 5px 9px; border-radius: 5px;
+    background: #131317; border: 1px solid #34343f;
+    color: #c9c9d4; font: inherit;
+  }
+  .path:focus { outline: none; border-color: var(--accent); }
+  .btn {
+    padding: 5px 14px; border-radius: 5px; cursor: pointer;
+    background: #2c2c37; border: 1px solid #3a3a46; color: #d4d4dd;
+    font: inherit; font-weight: 500;
+  }
+  .btn:hover { background: #34343f; }
+  .btn.primary {
+    background: linear-gradient(#4c8dff, #3b78e0);
+    border-color: #5c98ff; color: #fff;
+  }
+  .btn.primary:hover { background: linear-gradient(#5b98ff, #4483ea); }
+  .scanmeta { color: var(--dim); font-size: 11.5px; margin-left: auto; }
+  .scanmeta b { color: #b9b9c6; font-weight: 500; }
+
+  /* ---------- stats strip ---------- */
+  .stats {
+    display: flex; align-items: stretch; gap: 0;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .stats .sel {
+    width: 300px; padding: 8px 14px; border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; justify-content: center; gap: 2px;
+  }
+  .stats .sel .k { color: var(--dimmer); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; }
+  .stats .sel .v { color: #cfcfda; font-size: 13px; font-weight: 500; }
+  .stats .grid {
+    flex: 1; display: grid; grid-template-columns: repeat(4, 1fr);
+    align-items: center; padding: 0 4px;
+  }
+  .stat { padding: 0 14px; border-right: 1px solid #24242c; }
+  .stat:last-child { border-right: 0; }
+  .stat .k { color: var(--dimmer); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; display: block; }
+  .stat .v { font-size: 13.5px; font-weight: 500; color: #e2e2ea; }
+  .stat .v small { color: var(--dim); font-weight: 400; font-size: 11px; }
+  .stat.used .v { color: var(--amber); }
+  .usage { width: 220px; padding: 0 14px; display: flex; align-items: center; border-left: 1px solid #24242c; }
+  .ubar { flex: 1; height: 9px; border-radius: 5px; background: #2a2a33; overflow: hidden; position: relative; }
+  .ubar i { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: linear-gradient(90deg, #d9663f, #e0575b); }
+  .ubar i.ok { background: linear-gradient(90deg, #3fb98a, #35a67b); }
+  .ubar i.warn { background: linear-gradient(90deg, #f2a33c, #e08b2c); }
+
+  /* ---------- workspace ---------- */
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1.22fr) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1.18fr);
+    gap: 1px; background: var(--line); min-height: 0;
+  }
+  .panel {
+    background: var(--panel); display: flex; flex-direction: column;
+    min-height: 0; min-width: 0; overflow: hidden;
+  }
+  .panel.map { grid-column: 1 / -1; }
+  .phead {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 12px; border-bottom: 1px solid var(--line);
+    background: #202027; flex: none;
+  }
+  .phead h2 {
+    margin: 0; font-size: 10.5px; font-weight: 600; letter-spacing: .1em;
+    text-transform: uppercase; color: #9a9aa8;
+  }
+  .phead .hint { color: var(--dimmer); font-size: 11px; margin-left: auto; }
+
+  /* ---------- tables ---------- */
+  .thead, .trow { display: grid; align-items: center; }
+  .tree .thead, .tree .trow {
+    grid-template-columns: minmax(0, 1fr) 92px 86px 74px;
+  }
+  .ext .thead, .ext .trow {
+    grid-template-columns: 14px minmax(0, 1fr) 62px 78px 64px;
+  }
+  .thead {
+    padding: 5px 12px; border-bottom: 1px solid var(--line);
+    background: #232329; flex: none;
+    color: var(--dimmer); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .thead > div { padding-right: 8px; }
+  .thead > div.r { text-align: right; }
+  .tbody { overflow: auto; flex: 1; min-height: 0; }
+  .tbody::-webkit-scrollbar { width: 10px; height: 10px; }
+  .tbody::-webkit-scrollbar-track { background: #1a1a1f; }
+  .tbody::-webkit-scrollbar-thumb { background: #383843; border-radius: 5px; border: 2px solid #1a1a1f; }
+  .tbody::-webkit-scrollbar-thumb:hover { background: #464655; }
+
+  .trow {
+    padding: 0 12px; height: 22px; cursor: default;
+    border-bottom: 1px solid #1f1f26; position: relative;
+  }
+  .trow:hover { background: #26262f; }
+  .trow.sel { background: var(--sel); }
+  .trow.sel .name { color: #fff; }
+  .trow .name {
+    display: flex; align-items: center; gap: 5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    color: #d2d2dc; min-width: 0;
+  }
+  .trow .name span { overflow: hidden; text-overflow: ellipsis; }
+  .chev {
+    width: 13px; flex: none; text-align: center; color: var(--dimmer);
+    cursor: pointer; font-size: 9px; line-height: 1;
+  }
+  .chev:hover { color: #fff; }
+  .chev.empty { visibility: hidden; }
+  .dot { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+  .trow .r { text-align: right; padding-right: 8px; color: #a9a9b8; }
+  .trow .r.size { color: #cfcfda; }
+
+  .pct { position: relative; text-align: right; padding-right: 8px; }
+  .pct .bg {
+    position: absolute; right: 8px; top: 3px; bottom: 3px;
+    background: #3a3a47; border-radius: 2px; z-index: 0;
+  }
+  .pct .t { position: relative; z-index: 1; color: #b4b4c2; }
+
+  /* ---------- extension strip ---------- */
+  .strip {
+    display: flex; height: 22px; margin: 8px 12px 6px; border-radius: 4px;
+    overflow: hidden; background: #2a2a33; flex: none; cursor: default;
+  }
+  .strip i { display: block; height: 100%; }
+  .strip i:hover { filter: brightness(1.45); }
+  .ext .trow { height: 23px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; }
+  .extname { font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; color: #cfcfda; }
+  .type { color: var(--dimmer); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .heat { height: 6px; border-radius: 3px; background: #2a2a33; overflow: hidden; margin-right: 8px; }
+  .heat i { display: block; height: 100%; border-radius: 3px; }
+
+  /* ---------- treemap ---------- */
+  .crumbs { display: flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--dim); overflow: hidden; }
+  .crumbs b { color: #d6d6e0; font-weight: 500; }
+  .crumbs .sep { color: #45454f; }
+  .crumbs span { cursor: pointer; white-space: nowrap; }
+  .crumbs span:hover { color: #fff; text-decoration: underline; }
+  #map { flex: 1; min-height: 0; width: 100%; display: block; }
+  #map rect { cursor: pointer; }
+  #map text {
+    font: 10.5px "Segoe UI", system-ui, sans-serif;
+    fill: #fff; pointer-events: none;
+    paint-order: stroke; stroke: rgba(0,0,0,.72); stroke-width: 2.6px; stroke-linejoin: round;
+  }
+  #map text.sub { font-size: 9.5px; fill: #d8d8e2; }
+
+  /* ---------- details ---------- */
+  .details {
+    display: flex; align-items: center; gap: 16px; padding: 0 14px;
+    background: #202027; border-top: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .details .d { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .details .d .k { color: var(--dimmer); font-size: 9.5px; letter-spacing: .09em; text-transform: uppercase; }
+  .details .d .v { color: #d2d2dc; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .details .grow { flex: 1; min-width: 0; }
+  .details .pathv { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #9c9cab; }
+  .details .empty { color: var(--dimmer); font-style: italic; }
+  .details .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+
+  .tip {
+    position: fixed; z-index: 50; pointer-events: none; opacity: 0;
+    background: #0d0d11; border: 1px solid #3b3b48; border-radius: 6px;
+    padding: 7px 10px; max-width: 420px;
+    box-shadow: 0 10px 28px rgba(0,0,0,.55);
+    transition: opacity .09s;
+  }
+  .tip .tn { font-weight: 600; color: #fff; margin-bottom: 3px; }
+  .tip .tp { color: #9a9aab; font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; word-break: break-all; }
+  .tip .ts { color: #cfcfda; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .tip .ts b { color: #fff; }
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">Disk<span>Usage</span></div>
+  <div class="drive" id="driveChip">G:</div>
+  <input class="path" id="pathBox" value="" spellcheck="false">
+  <button class="btn primary" id="scanBtn">Scan</button>
+  <div class="scanmeta" id="scanMeta"></div>
+</header>
+
+<section class="stats">
+  <div class="sel">
+    <div class="k">Selection</div>
+    <div class="v" id="selName">—</div>
+  </div>
+  <div class="grid">
+    <div class="stat"><span class="k">Total space</span><span class="v" id="sTotal">—</span></div>
+    <div class="stat used"><span class="k">Space used</span><span class="v" id="sUsed">—</span></div>
+    <div class="stat"><span class="k">Space free</span><span class="v" id="sFree">—</span></div>
+    <div class="stat"><span class="k">Scanned</span><span class="v" id="sScanned">—</span></div>
+  </div>
+  <div class="usage"><div class="ubar"><i id="uBar"></i></div></div>
+</section>
+
+<main class="workspace">
+  <section class="panel tree">
+    <div class="phead"><h2>Folders</h2><span class="hint">chevron expands · row selects</span></div>
+    <div class="thead">
+      <div>Folder</div><div class="r">% of parent</div><div class="r">Size</div><div class="r">Items</div>
+    </div>
+    <div class="tbody" id="treeBody"></div>
+  </section>
+
+  <section class="panel ext">
+    <div class="phead"><h2>Extensions</h2><span class="hint">click to isolate in heatmap</span></div>
+    <div class="strip" id="extStrip"></div>
+    <div class="thead">
+      <div></div><div>Extension</div><div class="r">Share</div><div class="r">Size</div><div class="r">Files</div>
+    </div>
+    <div class="tbody" id="extBody"></div>
+  </section>
+
+  <section class="panel map">
+    <div class="phead">
+      <h2>Heatmap</h2>
+      <div class="crumbs" id="crumbs"></div>
+      <span class="hint">click a block to drill in</span>
+    </div>
+    <svg id="map"></svg>
+  </section>
+</main>
+
+<footer class="details" id="details"></footer>
+
+<div class="tip" id="tip"></div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var D = window.DISK_DATA;
+  var NS = "http://www.w3.org/2000/svg";
+
+  var PALETTE = [
+    "#5b8def", "#e0575b", "#f2a33c", "#3fb98a", "#a86bd1", "#e07ab0",
+    "#4bb8c4", "#c9d24a", "#8b7cf6", "#ef7d4b", "#2f9e6e", "#d9534f",
+    "#7aa6e8", "#b58b3e", "#6fbf9a", "#c46a8a", "#5aa9d6", "#9aa53f",
+    "#8e6fd0", "#d1785a", "#4fa3a0", "#c25b7c", "#7f9f4a", "#9c7bd0"
+  ];
+
+  var TYPES = {
+    ".dll": "Application extension", ".exe": "Application", ".sys": "System file",
+    ".zip": "Compressed archive", ".rar": "Compressed archive", ".7z": "Compressed archive",
+    ".png": "PNG image", ".jpg": "JPEG image", ".jpeg": "JPEG image", ".webp": "WebP image",
+    ".gif": "GIF image", ".svg": "SVG image", ".mp4": "MP4 video", ".mkv": "Matroska video",
+    ".avi": "AVI video", ".mov": "QuickTime video", ".mp3": "MP3 audio", ".wav": "Wave audio",
+    ".flac": "FLAC audio", ".ogg": "Ogg audio", ".pdf": "PDF document", ".doc": "Word document",
+    ".docx": "Word document", ".xls": "Excel sheet", ".xlsx": "Excel sheet", ".ppt": "PowerPoint",
+    ".pptx": "PowerPoint", ".txt": "Text file", ".md": "Markdown", ".json": "JSON file",
+    ".xml": "XML file", ".html": "HTML document", ".css": "Stylesheet", ".js": "JavaScript",
+    ".ts": "TypeScript", ".py": "Python source", ".cs": "C# source", ".jar": "Java archive",
+    ".pak": "PAK archive", ".bin": "Binary data", ".dat": "Data file", ".db": "Database",
+    ".iso": "Disc image", ".msi": "Windows installer", ".log": "Log file", ".ttf": "Font",
+    ".otf": "Font", ".woff": "Web font", ".woff2": "Web font", ".ico": "Icon",
+    ".psd": "Photoshop", ".blend": "Blender scene", ".unity3d": "Unity asset",
+    ".uasset": "Unreal asset", ".umap": "Unreal map", ".bk2": "Bink video",
+    ".pck": "Godot package", ".vpk": "Valve package", ".bsa": "Bethesda archive",
+    ".esm": "Bethesda plugin", ".esp": "Bethesda plugin", ".nif": "NetImmerse mesh",
+    ".dds": "DirectDraw surface", ".tga": "Targa image", ".bmp": "Bitmap image",
+    ".csv": "CSV data", ".ini": "Configuration", ".cfg": "Configuration", ".conf": "Configuration",
+    ".yml": "YAML", ".yaml": "YAML", ".toml": "TOML", ".sh": "Shell script", ".bat": "Batch file",
+    ".ps1": "PowerShell", ".apk": "Android package", ".ipa": "iOS package", ".dmg": "Disk image",
+    ".pdb": "Debug symbols", ".lib": "Static library", ".obj": "Object file", ".a": "Static library",
+    ".so": "Shared object", ".dylib": "Dynamic library"
+  };
+
+  function fmt(b) {
+    if (b >= 1099511627776) return (b / 1099511627776).toFixed(2) + " TB";
+    if (b >= 1073741824) return (b / 1073741824).toFixed(2) + " GB";
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+    if (b >= 1024) return Math.round(b / 1024) + " KB";
+    return b + " B";
+  }
+  function num(n) { return n.toLocaleString("en-US"); }
+  function extOf(name) {
+    var i = name.lastIndexOf(".");
+    if (i <= 0) return "(none)";
+    return name.slice(i).toLowerCase();
+  }
+  function typeOf(ext) {
+    if (!ext) return "Folder";
+    if (TYPES[ext]) return TYPES[ext];
+    if (ext === "(none)") return "No extension";
+    var bare = ext.slice(1).toUpperCase();
+    return bare.length <= 5 ? bare + " file" : "File";
+  }
+  function hash(s) {
+    var h = 2166136261;
+    for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (h * 16777619) >>> 0; }
+    return h;
+  }
+  function extColor(ext) {
+    if (!ext || ext === "(none)") return "#55555f";
+    return PALETTE[hash(ext) % PALETTE.length];
+  }
+
+  /* ---------------- header ---------------- */
+  var total = D.drive.total || 0;
+  var free = D.drive.free || 0;
+  var used = total - free;
+  var usedPct = total ? (used / total) * 100 : 0;
+
+  document.getElementById("driveChip").textContent = D.drive.name || "—";
+  document.getElementById("pathBox").value = D.root;
+  document.getElementById("selName").textContent = D.root;
+  document.getElementById("sTotal").textContent = fmt(total);
+  document.getElementById("sUsed").innerHTML = fmt(used) + " <small>(" + usedPct.toFixed(1) + "%)</small>";
+  document.getElementById("sFree").textContent = fmt(free);
+  document.getElementById("sScanned").innerHTML = fmt(D.totals.size) + " <small>· " + num(D.totals.files) + " files</small>";
+  document.getElementById("scanMeta").innerHTML =
+    "<b>" + num(D.totals.files) + "</b> files · <b>" + (D.scanMs / 1000).toFixed(1) + "s</b> · " + D.threads + " threads";
+
+  var uBar = document.getElementById("uBar");
+  uBar.style.width = usedPct.toFixed(1) + "%";
+  uBar.className = usedPct >= 90 ? "" : (usedPct >= 75 ? "warn" : "ok");
+
+  /* ---------------- helpers ---------------- */
+  function kidsOf(n) {
+    if (!n.c) return [];
+    if (!n._sorted) {
+      n.c.sort(function (a, b) { return b.s - a.s; });
+      n._sorted = true;
+    }
+    return n.c;
+  }
+
+  // Dominant extension inside a subtree, sampled with a node budget so this
+  // stays cheap on a 20k-node tree.
+  function dominantExt(node) {
+    if (node._de !== undefined) return node._de;
+    if (node.file) { node._de = extOf(node.n); return node._de; }
+
+    var acc = Object.create(null);
+    var budget = 700;
+    (function walk(n) {
+      if (budget-- <= 0) return;
+      if (n.file) { var e = extOf(n.n); acc[e] = (acc[e] || 0) + n.s; return; }
+      var k = kidsOf(n);
+      for (var i = 0; i < k.length; i++) walk(k[i]);
+    })(node);
+
+    var best = null, bestSize = -1;
+    for (var e in acc) { if (acc[e] > bestSize) { bestSize = acc[e]; best = e; } }
+    node._de = best;
+    return best;
+  }
+
+  /* ---------------- tree table ---------------- */
+  var expanded = Object.create(null);
+  var selected = D.tree;
+  var treeBody = document.getElementById("treeBody");
+
+  function pctColor(p) {
+    if (p >= 25) return "var(--red)";
+    if (p >= 10) return "var(--amber)";
+    return "var(--green)";
+  }
+
+  function renderTree() {
+    treeBody.innerHTML = "";
+    var frag = document.createDocumentFragment();
+    walkTree(D.tree, 0, D.tree.s, frag);
+    treeBody.appendChild(frag);
+  }
+
+  function walkTree(node, depth, parentSize, frag) {
+    var row = document.createElement("div");
+    row.className = "trow" + (node === selected ? " sel" : "");
+
+    var name = document.createElement("div");
+    name.className = "name";
+
+    var chev = document.createElement("div");
+    var kids = kidsOf(node);
+    if (kids.length) {
+      chev.className = "chev";
+      chev.textContent = expanded[node.p] ? "▼" : "▶";
+      chev.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        if (expanded[node.p]) delete expanded[node.p]; else expanded[node.p] = true;
+        renderTree();
+      });
+    } else {
+      chev.className = "chev empty";
+      chev.textContent = "▶";
+    }
+    name.appendChild(chev);
+
+    var dot = document.createElement("i");
+    dot.className = "dot";
+    dot.style.background = extColor(dominantExt(node));
+    name.appendChild(dot);
+
+    var label = document.createElement("span");
+    label.textContent = node.n;
+    label.style.paddingLeft = (depth * 12) + "px";
+    name.appendChild(label);
+
+    var pct = document.createElement("div");
+    pct.className = "pct";
+    var share = parentSize ? (node.s / parentSize) * 100 : 0;
+    var bg = document.createElement("div");
+    bg.className = "bg";
+    bg.style.width = Math.max(0, Math.min(100, share)) + "%";
+    var tv = document.createElement("div");
+    tv.className = "t";
+    tv.textContent = share.toFixed(1) + "%";
+    pct.appendChild(bg); pct.appendChild(tv);
+
+    var size = document.createElement("div");
+    size.className = "r size";
+    size.textContent = fmt(node.s);
+
+    var items = document.createElement("div");
+    items.className = "r";
+    items.textContent = num(node.i || 0);
+
+    row.appendChild(name); row.appendChild(pct); row.appendChild(size); row.appendChild(items);
+
+    row.addEventListener("click", function () {
+      selected = node;
+      showDetails(node, parentSize);
+      renderTree();
+    });
+
+    frag.appendChild(row);
+
+    if (expanded[node.p]) {
+      for (var i = 0; i < kids.length; i++) walkTree(kids[i], depth + 1, node.s, frag);
+    }
+  }
+
+  /* ---------------- details ---------------- */
+  var detailsEl = document.getElementById("details");
+
+  function showDetails(node, parentSize) {
+    var ext = node.file ? extOf(node.n) : dominantExt(node);
+    var share = parentSize ? (node.s / parentSize) * 100 : 100;
+
+    detailsEl.innerHTML = "";
+    var sw = document.createElement("i");
+    sw.className = "sw";
+    sw.style.background = extColor(ext);
+    detailsEl.appendChild(sw);
+
+    var dName = document.createElement("div");
+    dName.className = "d grow";
+    dName.innerHTML = '<span class="k">' + (node.file ? "File" : "Folder") + '</span><span class="v">' + esc(node.n) + "</span>";
+    detailsEl.appendChild(dName);
+
+    var dPath = document.createElement("div");
+    dPath.className = "d grow";
+    dPath.style.flex = "2";
+    dPath.innerHTML = '<span class="k">Full path</span><span class="v pathv">' + esc(node.p) + "</span>";
+    detailsEl.appendChild(dPath);
+
+    addDetail("Size", fmt(node.s));
+    addDetail("Share of parent", share.toFixed(1) + "%");
+    addDetail("Items", num(node.i || 0));
+    addDetail("Type", typeOf(ext));
+  }
+
+  function addDetail(k, v) {
+    var d = document.createElement("div");
+    d.className = "d";
+    d.innerHTML = '<span class="k">' + k + '</span><span class="v">' + v + "</span>";
+    detailsEl.appendChild(d);
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  function emptyDetails() {
+    detailsEl.innerHTML = '<span class="empty">Select a folder, a file or a heatmap block to see its details.</span>';
+  }
+
+  /* ---------------- extensions ---------------- */
+  var totalScan = D.totals.size || 1;
+  var extBody = document.getElementById("extBody");
+  var extStrip = document.getElementById("extStrip");
+  var isolatedExt = null;
+
+  function renderExtensions() {
+    extBody.innerHTML = "";
+    extStrip.innerHTML = "";
+
+    var exts = D.extensions.slice(0, 120);
+    var maxSize = exts.length ? exts[0].s : 1;
+
+    // stacked composition strip
+    var shown = 0;
+    for (var i = 0; i < exts.length && i < 26; i++) {
+      var seg = document.createElement("i");
+      seg.style.width = (exts[i].s / totalScan * 100) + "%";
+      seg.style.background = extColor(exts[i].e);
+      seg.title = exts[i].e + " · " + fmt(exts[i].s);
+      extStrip.appendChild(seg);
+      shown += exts[i].s;
+    }
+    if (shown < totalScan) {
+      var rest = document.createElement("i");
+      rest.style.width = ((totalScan - shown) / totalScan * 100) + "%";
+      rest.style.background = "#3a3a45";
+      rest.title = "other extensions";
+      extStrip.appendChild(rest);
+    }
+
+    var frag = document.createDocumentFragment();
+    for (var j = 0; j < exts.length; j++) {
+      frag.appendChild(extRow(exts[j], maxSize));
+    }
+    extBody.appendChild(frag);
+  }
+
+  function extRow(x, maxSize) {
+    var row = document.createElement("div");
+    row.className = "trow" + (isolatedExt === x.e ? " sel" : "");
+
+    var sw = document.createElement("i");
+    sw.className = "swatch";
+    sw.style.background = extColor(x.e);
+
+    var nm = document.createElement("div");
+    nm.className = "name";
+    nm.innerHTML = '<span class="extname">' + esc(x.e) + '</span>';
+
+    var pct = document.createElement("div");
+    pct.className = "r";
+    pct.textContent = (x.s / totalScan * 100).toFixed(1) + "%";
+
+    var size = document.createElement("div");
+    size.className = "r size";
+    size.textContent = fmt(x.s);
+
+    var cnt = document.createElement("div");
+    cnt.className = "r";
+    cnt.textContent = num(x.c);
+
+    row.appendChild(sw); row.appendChild(nm); row.appendChild(pct); row.appendChild(size); row.appendChild(cnt);
+
+    row.addEventListener("click", function () {
+      isolatedExt = isolatedExt === x.e ? null : x.e;
+      renderExtensions();
+      drawMap();
+    });
+
+    return row;
+  }
+
+  /* ---------------- treemap ---------------- */
+  var mapRoot = D.tree;
+  var svg = document.getElementById("map");
+  var crumbsEl = document.getElementById("crumbs");
+  var tip = document.getElementById("tip");
+
+  function squarify(items, x, y, w, h) {
+    var out = [];
+    var row = [], rowSum = 0;
+
+    function worst(r, side) {
+      var sum = 0, max = 0, min = Infinity;
+      for (var i = 0; i < r.length; i++) {
+        var a = r[i].area;
+        sum += a;
+        if (a > max) max = a;
+        if (a < min) min = a;
+      }
+      if (sum <= 0 || min <= 0) return Infinity;
+      return Math.max((side * side * max) / (sum * sum), (sum * sum) / (side * side * min));
+    }
+
+    function flush() {
+      if (!row.length) return;
+      if (w >= h) {
+        var cw = rowSum / h;
+        var cy = y;
+        for (var i = 0; i < row.length; i++) {
+          var ch = row[i].area / cw;
+          out.push({ node: row[i].node, x: x, y: cy, w: cw, h: ch });
+          cy += ch;
+        }
+        x += cw; w -= cw;
+      } else {
+        var chh = rowSum / w;
+        var cx = x;
+        for (var j = 0; j < row.length; j++) {
+          var cw2 = row[j].area / chh;
+          out.push({ node: row[j].node, x: cx, y: y, w: cw2, h: chh });
+          cx += cw2;
+        }
+        y += chh; h -= chh;
+      }
+      row = []; rowSum = 0;
+    }
+
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (it.area <= 0) continue;
+      if (!row.length) { row.push(it); rowSum += it.area; continue; }
+      var side = Math.min(w, h);
+      if (worst(row.concat([it]), side) <= worst(row, side)) {
+        row.push(it); rowSum += it.area;
+      } else {
+        flush();
+        row.push(it); rowSum += it.area;
+      }
+    }
+    flush();
+    return out;
+  }
+
+  var drawn = 0;
+  var MAX_RECTS = 5200;
+
+  function drawMap() {
+    var box = svg.getBoundingClientRect();
+    var W = Math.max(1, Math.floor(box.width));
+    var H = Math.max(1, Math.floor(box.height));
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    drawn = 0;
+
+    renderCrumbs();
+
+    var kids = kidsOf(mapRoot).filter(function (n) { return n.s > 0; });
+    if (!kids.length) {
+      var t = document.createElementNS(NS, "text");
+      t.setAttribute("x", W / 2); t.setAttribute("y", H / 2);
+      t.setAttribute("text-anchor", "middle");
+      t.textContent = "No children to map";
+      svg.appendChild(t);
+      return;
+    }
+
+    var sum = 0;
+    for (var i = 0; i < kids.length; i++) sum += kids[i].s;
+    var area = W * H;
+    var items = kids.map(function (n) { return { node: n, area: (n.s / sum) * area }; });
+    var rects = squarify(items, 0, 0, W, H);
+
+    for (var j = 0; j < rects.length; j++) {
+      paintNode(rects[j].node, rects[j].x, rects[j].y, rects[j].w, rects[j].h, 0);
+    }
+  }
+
+  function paintNode(node, x, y, w, h, depth) {
+    if (w < 1.2 || h < 1.2 || drawn > MAX_RECTS) return;
+
+    var kids = kidsOf(node).filter(function (n) { return n.s > 0; });
+    var canSplit = kids.length > 0 && depth < 5 && w > 17 && h > 17;
+
+    if (!canSplit) {
+      drawBlock(node, x, y, w, h, false);
+      return;
+    }
+
+    var sum = 0;
+    for (var i = 0; i < kids.length; i++) sum += kids[i].s;
+    if (sum <= 0) { drawBlock(node, x, y, w, h, false); return; }
+
+    var area = w * h;
+    var items = kids.map(function (n) { return { node: n, area: (n.s / sum) * area }; });
+    var rects = squarify(items, x, y, w, h);
+
+    for (var j = 0; j < rects.length; j++) {
+      var r = rects[j];
+      paintNode(r.node, r.x + 0.5, r.y + 0.5, Math.max(0.4, r.w - 1), Math.max(0.4, r.h - 1), depth + 1);
+    }
+
+    if (depth > 0 && w > 54 && h > 30) drawFolderLabel(node, x, y, w, h);
+  }
+
+  function drawBlock(node, x, y, w, h, isFolder) {
+    drawn++;
+    var ext = dominantExt(node);
+    var color = extColor(ext);
+    var dim = isolatedExt && ext !== isolatedExt;
+
+    var r = document.createElementNS(NS, "rect");
+    r.setAttribute("x", x.toFixed(2));
+    r.setAttribute("y", y.toFixed(2));
+    r.setAttribute("width", Math.max(0, w).toFixed(2));
+    r.setAttribute("height", Math.max(0, h).toFixed(2));
+    r.setAttribute("fill", color);
+    r.setAttribute("fill-opacity", dim ? "0.13" : (node.file ? "0.92" : "0.8"));
+    if (node === selected) {
+      r.setAttribute("stroke", "#fff");
+      r.setAttribute("stroke-width", "1.6");
+    }
+    svg.appendChild(r);
+
+    r.addEventListener("mousemove", function (ev) { showTip(ev, node); });
+    r.addEventListener("mouseleave", hideTip);
+    r.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (!node.file) { mapRoot = node; selected = node; showDetails(node, D.tree.s); drawMap(); }
+      else { selected = node; showDetails(node, D.tree.s); drawMap(); }
+    });
+
+    if (w > 62 && h > 20) {
+      var label = document.createElementNS(NS, "text");
+      label.setAttribute("x", (x + 4).toFixed(1));
+      label.setAttribute("y", (y + 12).toFixed(1));
+      label.textContent = clip(node.n, Math.floor(w / 6));
+      svg.appendChild(label);
+
+      if (h > 32) {
+        var sub = document.createElementNS(NS, "text");
+        sub.setAttribute("class", "sub");
+        sub.setAttribute("x", (x + 4).toFixed(1));
+        sub.setAttribute("y", (y + 23).toFixed(1));
+        sub.textContent = fmt(node.s);
+        svg.appendChild(sub);
+      }
+    }
+  }
+
+  function drawFolderLabel(node, x, y, w, h) {
+    var g = document.createElementNS(NS, "rect");
+    g.setAttribute("x", x.toFixed(2));
+    g.setAttribute("y", y.toFixed(2));
+    g.setAttribute("width", Math.max(0, w).toFixed(2));
+    g.setAttribute("height", Math.max(0, h).toFixed(2));
+    g.setAttribute("fill", "none");
+    g.setAttribute("stroke", "rgba(0,0,0,.55)");
+    g.setAttribute("stroke-width", "1.4");
+    g.setAttribute("pointer-events", "none");
+    svg.appendChild(g);
+
+    var chipW = Math.min(w - 4, Math.max(34, node.n.length * 6.2 + 8));
+    var chip = document.createElementNS(NS, "rect");
+    chip.setAttribute("x", (x + 1.5).toFixed(2));
+    chip.setAttribute("y", (y + 1.5).toFixed(2));
+    chip.setAttribute("width", chipW.toFixed(2));
+    chip.setAttribute("height", "15");
+    chip.setAttribute("rx", "3");
+    chip.setAttribute("fill", "rgba(8,8,12,.66)");
+    chip.setAttribute("pointer-events", "none");
+    svg.appendChild(chip);
+
+    var t = document.createElementNS(NS, "text");
+    t.setAttribute("x", (x + 5).toFixed(2));
+    t.setAttribute("y", (y + 12.2).toFixed(2));
+    t.setAttribute("class", "sub");
+    t.setAttribute("stroke", "none");
+    t.textContent = clip(node.n, Math.floor((chipW - 8) / 5.6));
+    svg.appendChild(t);
+  }
+
+  function clip(s, max) {
+    if (max < 3) return "";
+    if (s.length <= max) return s;
+    return s.slice(0, max - 1) + "…";
+  }
+
+  function renderCrumbs() {
+    crumbsEl.innerHTML = "";
+    var chain = [];
+    var p = mapRoot;
+    while (p) { chain.unshift(p); p = p._parent; }
+
+    for (var i = 0; i < chain.length; i++) {
+      if (i) {
+        var sep = document.createElement("span");
+        sep.className = "sep";
+        sep.textContent = "›";
+        crumbsEl.appendChild(sep);
+      }
+      var s = document.createElement("span");
+      s.textContent = chain[i].n;
+      if (i === chain.length - 1) { var b = document.createElement("b"); b.textContent = chain[i].n; s.textContent = ""; s.appendChild(b); }
+      else { (function (node) { s.addEventListener("click", function () { mapRoot = node; drawMap(); }); })(chain[i]); }
+      crumbsEl.appendChild(s);
+    }
+  }
+
+  // parent links, needed for the breadcrumb
+  (function linkParents(n) {
+    var k = kidsOf(n);
+    for (var i = 0; i < k.length; i++) { k[i]._parent = n; linkParents(k[i]); }
+  })(D.tree);
+
+  /* ---------------- tooltip ---------------- */
+  function showTip(ev, node) {
+    var ext = node.file ? extOf(node.n) : dominantExt(node);
+    tip.innerHTML =
+      '<div class="tn">' + esc(node.n) + "</div>" +
+      '<div class="tp">' + esc(node.p) + "</div>" +
+      '<div class="ts"><b>' + fmt(node.s) + "</b> · " + (node.s / totalScan * 100).toFixed(1) + "% of scan · " +
+      (node.file ? "file" : num(node.i || 0) + " items") + " · " + esc(typeOf(ext)) + "</div>";
+    tip.style.opacity = "1";
+
+    var pad = 14;
+    var r = tip.getBoundingClientRect();
+    var x = ev.clientX + pad;
+    var y = ev.clientY + pad;
+    if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - pad;
+    if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - pad;
+    tip.style.left = x + "px";
+    tip.style.top = y + "px";
+  }
+  function hideTip() { tip.style.opacity = "0"; }
+
+  /* ---------------- boot ---------------- */
+  expanded[D.tree.p] = true;
+  renderTree();
+  renderExtensions();
+  emptyDetails();
+
+  var rt;
+  window.addEventListener("resize", function () {
+    clearTimeout(rt);
+    rt = setTimeout(drawMap, 120);
+  });
+
+  // layout must exist before the first paint
+  requestAnimationFrame(function () {
+    drawMap();
+    showDetails(D.tree, D.tree.s);
+  });
+
+  document.getElementById("scanBtn").addEventListener("click", function () {
+    var b = this;
+    b.textContent = "Prototype";
+    setTimeout(function () { b.textContent = "Scan"; }, 900);
+  });
+})();
+</script>
+</body>
+</html>

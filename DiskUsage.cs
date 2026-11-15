@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -20,6 +21,28 @@ internal sealed class FileRec
     public long Size;
 }
 
+// One node of the folder tree emitted to JSON. Sizes and item counts are
+// filled in by FinalizeTree after the walk, because files deeper than
+// TreeDepth are folded into their nearest ancestor instead of getting a node.
+internal sealed class Node
+{
+    public string Name;
+    public string Path;
+    public long Size;      // direct plus folded bytes
+    public long Files;     // files sitting directly in this folder
+    public long Folded;    // files counted here but belonging to a deeper folder
+    public long Items;     // Files + Folded + every descendant item
+    public bool IsFile;
+    public bool IsLink;
+    public readonly List<Node> Children = new List<Node>();
+}
+
+internal sealed class ExtAgg
+{
+    public long Size;
+    public long Count;
+}
+
 internal sealed class Entry
 {
     public string Name;
@@ -31,6 +54,7 @@ internal sealed class ScanResult
 {
     public long Size;
     public long Errors;
+    public Node Tree;
     public readonly List<FileRec> Big = new List<FileRec>();
 }
 
@@ -40,6 +64,12 @@ internal static class Program
     private const int BarWidth = 22;
     private const int NameWidth = 34;
     private const int TableWidth = 80;
+
+    // JSON tree shape. Depth and child caps keep the export small enough for a
+    // browser to render; anything past them is folded into its nearest ancestor.
+    private const int TreeDepth = 6;
+    private const int MaxChildren = 300;
+    private const long TreeFileThreshold = 20L * 1024 * 1024;
 
     private static long _fileCount;
     private static long _errors;
@@ -51,6 +81,8 @@ internal static class Program
     private static DateTime _lastDraw = DateTime.MinValue;
     private static readonly object DrawLock = new object();
     private static readonly List<FileRec> BigFiles = new List<FileRec>();
+    private static readonly ConcurrentDictionary<string, ExtAgg> ExtStats =
+        new ConcurrentDictionary<string, ExtAgg>(StringComparer.OrdinalIgnoreCase);
 
     private static int Main(string[] args)
     {
@@ -60,6 +92,7 @@ internal static class Program
         double minMB = 0;
         int threads = Math.Min(Environment.ProcessorCount, 8);
         string export = null;
+        string exportJson = null;
         bool standalone = IsStandaloneLaunch();
 
         try
@@ -78,6 +111,7 @@ internal static class Program
                 else if (a == "-minmb") { minMB = double.Parse(args[++i], CultureInfo.InvariantCulture); }
                 else if (a == "-threads") { threads = int.Parse(args[++i], CultureInfo.InvariantCulture); }
                 else if (a == "-export") { export = args[++i]; }
+                else if (a == "-exportjson") { exportJson = args[++i]; }
                 else if (a == "-nocolor") { _noColor = true; }
                 else if (a.StartsWith("-"))
                 {
@@ -163,16 +197,36 @@ internal static class Program
         DirectoryInfo root = new DirectoryInfo(ToLongPath(resolved));
         long rootFileSize = 0;
 
+        Node rootNode = new Node();
+        rootNode.Path = DisplayPath(resolved);
+        string rootName = Path.GetFileName(DisplayPath(resolved).TrimEnd('\\'));
+        rootNode.Name = string.IsNullOrEmpty(rootName) ? DisplayPath(resolved) : rootName;
+
         try
         {
             foreach (FileInfo fi in root.EnumerateFiles())
             {
                 try
                 {
-                    rootFileSize += fi.Length;
+                    long len = fi.Length;
+                    rootFileSize += len;
+                    rootNode.Size += len;
+                    rootNode.Files++;
                     Interlocked.Increment(ref _fileCount);
-                    if (fi.Length >= BigThreshold)
-                        BigFiles.Add(new FileRec { Path = fi.FullName, Size = fi.Length });
+
+                    if (len >= BigThreshold)
+                        BigFiles.Add(new FileRec { Path = fi.FullName, Size = len });
+
+                    if (len >= TreeFileThreshold)
+                        rootNode.Children.Add(new Node
+                        {
+                            Name = fi.Name,
+                            Path = DisplayPath(fi.FullName),
+                            Size = len,
+                            IsFile = true
+                        });
+
+                    TrackExtension(fi.Name, len);
                 }
                 catch { _errors++; }
             }
@@ -223,7 +277,15 @@ internal static class Program
             _errors += r.Errors;
             BigFiles.AddRange(r.Big);
             if (!isLink[i]) totalSize += r.Size;
+
+            if (r.Tree != null)
+            {
+                r.Tree.IsLink = isLink[i];
+                rootNode.Children.Add(r.Tree);
+            }
         }
+
+        FinalizeTree(rootNode);
 
         long minBytes = (long)(minMB * 1024.0 * 1024.0);
         List<Entry> ranked = new List<Entry>();
@@ -304,6 +366,24 @@ internal static class Program
             Fmt(totalSize), watch.Elapsed.TotalSeconds, skipped), ConsoleColor.DarkGray);
         Console.WriteLine();
 
+        if (!string.IsNullOrEmpty(exportJson))
+        {
+            try
+            {
+                string fullJson = Path.GetFullPath(exportJson);
+                // UTF8Encoding(false) omits the BOM, which would otherwise land
+                // in the middle of the generated data.js and break the parser.
+                File.WriteAllText(fullJson, BuildJson(rootNode, resolved, watch, totalSize, threads), new UTF8Encoding(false));
+                WriteLine("  Data written to " + fullJson, ConsoleColor.Cyan);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Could not write JSON: " + ex.Message);
+                PauseIfStandalone(standalone);
+                return 1;
+            }
+        }
+
         if (!string.IsNullOrEmpty(export))
         {
             try
@@ -327,58 +407,110 @@ internal static class Program
     private static ScanResult MeasureTree(string directory)
     {
         ScanResult result = new ScanResult();
-        Stack<string> stack = new Stack<string>();
-        stack.Push(directory);
-        long sinceDraw = 0;
+        DirectoryInfo info = new DirectoryInfo(directory);
 
-        while (stack.Count > 0)
+        Node root = new Node();
+        root.Name = info.Name;
+        root.Path = DisplayPath(directory);
+        result.Tree = root;
+
+        WalkTree(info, root, 0, false, result);
+        return result;
+    }
+
+    // Depth-first walk that records a node for every folder down to TreeDepth.
+    // Past that point, and once a node has MaxChildren entries, files and
+    // folders are folded into the nearest ancestor so sizes stay exact.
+    private static void WalkTree(DirectoryInfo dir, Node owner, int depth, bool folded, ScanResult result)
+    {
+        try
         {
-            string current = stack.Pop();
-            DirectoryInfo di;
-
-            try { di = new DirectoryInfo(current); }
-            catch { result.Errors++; continue; }
-
-            try
+            foreach (FileInfo fi in dir.EnumerateFiles())
             {
-                foreach (FileInfo fi in di.EnumerateFiles())
+                try
                 {
-                    try
-                    {
-                        long len = fi.Length;
-                        result.Size += len;
-                        Interlocked.Increment(ref _fileCount);
+                    long len = fi.Length;
+                    owner.Size += len;
+                    if (folded) owner.Folded++; else owner.Files++;
+                    result.Size += len;
 
-                        if (len >= BigThreshold)
-                            result.Big.Add(new FileRec { Path = fi.FullName, Size = len });
+                    if ((Interlocked.Increment(ref _fileCount) & 1023) == 0) MaybeDrawProgress();
 
-                        if (++sinceDraw >= 1000)
+                    if (len >= BigThreshold)
+                        result.Big.Add(new FileRec { Path = fi.FullName, Size = len });
+
+                    if (!folded && len >= TreeFileThreshold && owner.Children.Count < MaxChildren)
+                        owner.Children.Add(new Node
                         {
-                            sinceDraw = 0;
-                            MaybeDrawProgress();
-                        }
-                    }
-                    catch { result.Errors++; }
-                }
-            }
-            catch { result.Errors++; }
+                            Name = fi.Name,
+                            Path = DisplayPath(fi.FullName),
+                            Size = len,
+                            IsFile = true
+                        });
 
-            try
-            {
-                foreach (DirectoryInfo sd in di.EnumerateDirectories())
-                {
-                    try
-                    {
-                        if ((sd.Attributes & FileAttributes.ReparsePoint) != 0) continue;
-                        stack.Push(sd.FullName);
-                    }
-                    catch { result.Errors++; }
+                    TrackExtension(fi.Name, len);
                 }
+                catch { result.Errors++; }
             }
-            catch { result.Errors++; }
+        }
+        catch { result.Errors++; }
+
+        try
+        {
+            foreach (DirectoryInfo sd in dir.EnumerateDirectories())
+            {
+                try
+                {
+                    if ((sd.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+
+                    if (!folded && depth < TreeDepth && owner.Children.Count < MaxChildren)
+                    {
+                        Node child = new Node();
+                        child.Name = sd.Name;
+                        child.Path = DisplayPath(sd.FullName);
+                        owner.Children.Add(child);
+                        WalkTree(sd, child, depth + 1, false, result);
+                    }
+                    else
+                    {
+                        WalkTree(sd, owner, depth + 1, true, result);
+                    }
+                }
+                catch { result.Errors++; }
+            }
+        }
+        catch { result.Errors++; }
+    }
+
+    // Rolls direct and folded bytes up the tree so each node carries its full
+    // recursive size and item count.
+    private static void FinalizeTree(Node node)
+    {
+        if (node.IsFile) { node.Items = 1; return; }
+
+        long size = node.Size;
+        long items = node.Files + node.Folded;
+
+        for (int i = 0; i < node.Children.Count; i++)
+        {
+            FinalizeTree(node.Children[i]);
+            size += node.Children[i].Size;
+            items += node.Children[i].Items;
         }
 
-        return result;
+        node.Size = size;
+        node.Items = items;
+    }
+
+    private static void TrackExtension(string fileName, long len)
+    {
+        string ext = Path.GetExtension(fileName);
+        if (string.IsNullOrEmpty(ext)) ext = "(none)";
+        ext = ext.ToLowerInvariant();
+
+        ExtAgg agg = ExtStats.GetOrAdd(ext, delegate(string k) { return new ExtAgg(); });
+        Interlocked.Add(ref agg.Size, len);
+        Interlocked.Increment(ref agg.Count);
     }
 
     private static string Fmt(long bytes)
@@ -595,6 +727,131 @@ internal static class Program
         try { Console.ReadKey(true); } catch { }
     }
 
+    private static string BuildJson(Node root, string resolved, Stopwatch watch, long totalSize, int threads)
+    {
+        StringBuilder sb = new StringBuilder(1 << 20);
+
+        sb.Append("{\"root\":").Append(JsonStr(DisplayPath(resolved)));
+        sb.Append(",\"scannedAt\":").Append(JsonStr(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)));
+        sb.Append(",\"scanMs\":").Append(((long)watch.Elapsed.TotalMilliseconds).ToString(CultureInfo.InvariantCulture));
+        sb.Append(",\"threads\":").Append(threads.ToString(CultureInfo.InvariantCulture));
+
+        sb.Append(",\"drive\":{");
+        string rootPath = Path.GetPathRoot(resolved);
+        bool driveWritten = false;
+        if (!string.IsNullOrEmpty(rootPath))
+        {
+            try
+            {
+                DriveInfo di = new DriveInfo(rootPath);
+                if (di.IsReady)
+                {
+                    sb.Append("\"name\":").Append(JsonStr(di.Name.TrimEnd('\\')));
+                    sb.Append(",\"total\":").Append(di.TotalSize.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(",\"free\":").Append(di.AvailableFreeSpace.ToString(CultureInfo.InvariantCulture));
+                    driveWritten = true;
+                }
+            }
+            catch { }
+        }
+        if (!driveWritten) sb.Append("\"name\":\"\"");
+        sb.Append("}");
+
+        sb.Append(",\"totals\":{");
+        sb.Append("\"size\":").Append(totalSize.ToString(CultureInfo.InvariantCulture));
+        sb.Append(",\"files\":").Append(_fileCount.ToString(CultureInfo.InvariantCulture));
+        sb.Append(",\"errors\":").Append(_errors.ToString(CultureInfo.InvariantCulture));
+        sb.Append("}");
+
+        sb.Append(",\"tree\":");
+        AppendNode(sb, root);
+
+        // Extensions, biggest first. The UI only needs the head of this list.
+        List<KeyValuePair<string, ExtAgg>> exts = new List<KeyValuePair<string, ExtAgg>>(ExtStats);
+        exts.Sort(delegate(KeyValuePair<string, ExtAgg> a, KeyValuePair<string, ExtAgg> b)
+        {
+            return b.Value.Size.CompareTo(a.Value.Size);
+        });
+
+        sb.Append(",\"extensions\":[");
+        int extCount = Math.Min(exts.Count, 120);
+        for (int i = 0; i < extCount; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"e\":").Append(JsonStr(exts[i].Key));
+            sb.Append(",\"s\":").Append(exts[i].Value.Size.ToString(CultureInfo.InvariantCulture));
+            sb.Append(",\"c\":").Append(exts[i].Value.Count.ToString(CultureInfo.InvariantCulture));
+            sb.Append('}');
+        }
+        sb.Append(']');
+
+        BigFiles.Sort(delegate(FileRec a, FileRec b) { return b.Size.CompareTo(a.Size); });
+        sb.Append(",\"bigFiles\":[");
+        int bigCount = Math.Min(BigFiles.Count, 250);
+        for (int i = 0; i < bigCount; i++)
+        {
+            if (i > 0) sb.Append(',');
+            sb.Append("{\"p\":").Append(JsonStr(DisplayPath(BigFiles[i].Path)));
+            sb.Append(",\"s\":").Append(BigFiles[i].Size.ToString(CultureInfo.InvariantCulture));
+            sb.Append('}');
+        }
+        sb.Append("]}");
+
+        return sb.ToString();
+    }
+
+    private static void AppendNode(StringBuilder sb, Node node)
+    {
+        sb.Append("{\"n\":").Append(JsonStr(node.Name));
+        sb.Append(",\"p\":").Append(JsonStr(node.Path));
+        sb.Append(",\"s\":").Append(node.Size.ToString(CultureInfo.InvariantCulture));
+        sb.Append(",\"i\":").Append(node.Items.ToString(CultureInfo.InvariantCulture));
+        sb.Append(",\"f\":").Append(node.Files.ToString(CultureInfo.InvariantCulture));
+        if (node.IsFile) sb.Append(",\"file\":1");
+        if (node.IsLink) sb.Append(",\"link\":1");
+
+        if (node.Children.Count > 0)
+        {
+            sb.Append(",\"c\":[");
+            for (int i = 0; i < node.Children.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                AppendNode(sb, node.Children[i]);
+            }
+            sb.Append(']');
+        }
+
+        sb.Append('}');
+    }
+
+    private static string JsonStr(string s)
+    {
+        if (s == null) return "null";
+
+        StringBuilder sb = new StringBuilder(s.Length + 2);
+        sb.Append('"');
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < ' ' || c > '~') sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                    else sb.Append(c);
+                    break;
+            }
+        }
+        sb.Append('"');
+        return sb.ToString();
+    }
+
     private static void PrintHelp()
     {
         Console.WriteLine();
@@ -608,6 +865,7 @@ internal static class Program
         Console.WriteLine("    -MinMB N     hide folders smaller than N megabytes");
         Console.WriteLine("    -Threads N   parallel scan workers (default: cores, max 8)");
         Console.WriteLine("    -Export f    write an HTML report");
+        Console.WriteLine("    -ExportJson f  write scan data as JSON for the interactive UI");
         Console.WriteLine("    -NoColor     plain output, no progress line");
         Console.WriteLine();
         Console.WriteLine("  Examples:");

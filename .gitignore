@@ -1,6 +1,7 @@
 # Generated output
 report.html
 *.html
+!proto/prototype.html
 
 # Build artifacts from Visual Studio / MSBuild
 bin/
@@ -12,3 +13,10 @@ obj/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Prototype scratch data. Regenerate with:
+#   diskusage.exe <folder> -ExportJson proto\data.json
+proto/data.json
+proto/data.js
+proto/shot.png
+proto/_syntax.js
